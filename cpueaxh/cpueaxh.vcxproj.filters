@@ -39,6 +39,9 @@
     <ClInclude Include="instructions\add.hpp">
       <Filter>instructions</Filter>
     </ClInclude>
+    <ClInclude Include="instructions\aesenc.hpp">
+      <Filter>instructions</Filter>
+    </ClInclude>
     <ClInclude Include="instructions\aeskeygenassist.hpp">
       <Filter>instructions</Filter>
     </ClInclude>

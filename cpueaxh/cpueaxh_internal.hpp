@@ -44,6 +44,7 @@
 #include "instructions/sse_cmp.hpp"
 #include "instructions/cpuid.hpp"
 #include "instructions/xorps.hpp"
+#include "instructions/aesenc.hpp"
 #include "instructions/aeskeygenassist.hpp"
 #include "instructions/avx_vex.hpp"
 #include "instructions/not.hpp"

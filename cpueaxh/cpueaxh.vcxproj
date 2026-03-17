@@ -129,6 +129,7 @@
     <ClInclude Include="cpu\memory.hpp" />
     <ClInclude Include="instructions\adc.hpp" />
     <ClInclude Include="instructions\add.hpp" />
+    <ClInclude Include="instructions\aesenc.hpp" />
     <ClInclude Include="instructions\aeskeygenassist.hpp" />
     <ClInclude Include="instructions\and.hpp" />
     <ClInclude Include="instructions\avx_vex.hpp" />

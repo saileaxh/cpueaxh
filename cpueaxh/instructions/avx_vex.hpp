@@ -627,7 +627,6 @@ static DecodedInstruction decode_avx_vex_modrm(CPU_CONTEXT* ctx, uint8_t* code, 
     case 0x41:
     case 0xD8:
     case 0xD9:
-    case 0xDC:
     case 0xDD:
     case 0xE0:
     case 0xE3:
@@ -4256,6 +4255,26 @@ void execute_avx_vex(CPU_CONTEXT* ctx, uint8_t* code, size_t code_size) {
             int dest = avx_vex_dest_index(ctx, inst.modrm);
             set_xmm128(ctx, dest, apply_avx_phminposuw128(read_avx_int_rm128(ctx, &inst)));
             clear_ymm_upper128(ctx, dest);
+            return;
+        }
+        if (opcode == 0xDC) {
+            if (mandatory_prefix != 1) {
+                raise_ud();
+            }
+
+            DecodedInstruction inst = decode_avx_vex_modrm(ctx, code, code_size, &prefix);
+            int dest = avx_vex_dest_index(ctx, inst.modrm);
+            if (is_256) {
+                AVXRegister256 state = get_ymm256(ctx, avx_vex_source1_index(&prefix));
+                AVXRegister256 round_key = read_avx_rm256(ctx, &inst);
+                set_ymm256(ctx, dest, apply_vaesenc256(state, round_key));
+            }
+            else {
+                XMMRegister state = get_xmm128(ctx, avx_vex_source1_index(&prefix));
+                XMMRegister round_key = read_avx_int_rm128(ctx, &inst);
+                set_xmm128(ctx, dest, apply_aesenc128(state, round_key));
+                clear_ymm_upper128(ctx, dest);
+            }
             return;
         }
         if (opcode == 0x00) {
