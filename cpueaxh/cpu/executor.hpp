@@ -410,6 +410,9 @@ int cpu_step(CPU_CONTEXT* ctx) {
         result_code = CPU_STEP_UD;
         goto cpu_step_finish;
     }
+    else if (is_endbr_instruction(buf, (size_t)fetched)) {
+        execute_endbr(ctx, buf, (size_t)fetched);
+    }
     else if (is_rdssp_instruction(buf, (size_t)fetched)) {
         execute_rdssp(ctx, buf, (size_t)fetched);
     }

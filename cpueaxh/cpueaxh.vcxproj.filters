@@ -87,6 +87,9 @@
     <ClInclude Include="instructions\div.hpp">
       <Filter>instructions</Filter>
     </ClInclude>
+    <ClInclude Include="instructions\endbr.hpp">
+      <Filter>instructions</Filter>
+    </ClInclude>
     <ClInclude Include="instructions\enter.hpp">
       <Filter>instructions</Filter>
     </ClInclude>

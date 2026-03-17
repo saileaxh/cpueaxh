@@ -145,6 +145,7 @@
     <ClInclude Include="instructions\cpuid.hpp" />
     <ClInclude Include="instructions\dec.hpp" />
     <ClInclude Include="instructions\div.hpp" />
+    <ClInclude Include="instructions\endbr.hpp" />
     <ClInclude Include="instructions\enter.hpp" />
     <ClInclude Include="instructions\flags.hpp" />
     <ClInclude Include="instructions\idiv.hpp" />
