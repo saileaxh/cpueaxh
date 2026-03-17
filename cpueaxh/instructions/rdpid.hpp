@@ -1,5 +1,23 @@
 // instrusments/rdpid.hpp - RDPID instruction implementation
 
+inline bool rdpid_has_required_prefix(const uint8_t* code, size_t code_size, int prefix_len) {
+    if (!code || prefix_len < 0 || code_size < (size_t)prefix_len) {
+        return false;
+    }
+
+    bool has_f3_prefix = false;
+    for (int index = 0; index < prefix_len; index++) {
+        if (code[index] == 0x66) {
+            return false;
+        }
+        if (code[index] == 0xF3) {
+            has_f3_prefix = true;
+        }
+    }
+
+    return has_f3_prefix;
+}
+
 inline int decode_rdpid_rm_index(CPU_CONTEXT* ctx, uint8_t modrm) {
     int rm = modrm & 0x07;
     if (ctx->rex_b) {
@@ -13,7 +31,7 @@ inline bool is_rdpid_instruction(const uint8_t* code, size_t code_size, int pref
         return false;
     }
 
-    if (peek_mandatory_prefix(code, prefix_len) != 0xF3) {
+    if (!rdpid_has_required_prefix(code, code_size, prefix_len)) {
         return false;
     }
 
