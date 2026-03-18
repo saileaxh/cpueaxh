@@ -410,6 +410,9 @@ int cpu_step(CPU_CONTEXT* ctx) {
     else if (opc == 0x0F3A && mandatory_prefix == 0x66 && is_roundss_instruction(buf, fetched, prefix_len)) {
         execute_roundss(ctx, buf, (size_t)fetched);
     }
+    else if (opc == 0x0F3A && mandatory_prefix == 0x66 && is_roundsd_instruction(buf, fetched, prefix_len)) {
+        execute_roundsd(ctx, buf, (size_t)fetched);
+    }
     else if (opc == 0x0F3A && mandatory_prefix == 0x66 && is_pcmpistri_instruction(buf, fetched, prefix_len)) {
         execute_pcmpistri(ctx, buf, (size_t)fetched);
     }

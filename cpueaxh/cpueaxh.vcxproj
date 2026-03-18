@@ -178,6 +178,7 @@
     <ClInclude Include="instructions\push.hpp" />
     <ClInclude Include="instructions\pushf.hpp" />
     <ClInclude Include="instructions\rdpid.hpp" />
+    <ClInclude Include="instructions\roundsd.hpp" />
     <ClInclude Include="instructions\roundss.hpp" />
     <ClInclude Include="instructions\rdtsc.hpp" />
     <ClInclude Include="instructions\rdtscp.hpp" />

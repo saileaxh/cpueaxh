@@ -104,6 +104,7 @@
 #include "instructions/rdtsc.hpp"
 #include "instructions/rdtscp.hpp"
 #include "instructions/rdssp.hpp"
+#include "instructions/roundsd.hpp"
 #include "instructions/roundss.hpp"
 #include "instructions\rdrand.hpp"
 #include "instructions\xgetbv.hpp"
