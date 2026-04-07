@@ -61,7 +61,7 @@ static void decode_nop_modrm(CPU_CONTEXT* ctx, DecodedInstruction* inst, uint8_t
     }
 
     if (mod != 3) {
-        inst->mem_address = get_effective_address(ctx, inst->modrm, &inst->sib, &inst->displacement, inst->address_size);
+        inst->mem_address = get_effective_offset(ctx, inst->modrm, &inst->sib, &inst->displacement, inst->address_size);
     }
 }
 
@@ -146,7 +146,6 @@ DecodedInstruction decode_nop_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
     }
 
     inst.inst_size = (int)offset;
-    finalize_rip_relative_address(ctx, &inst, (int)offset);
     ctx->last_inst_size = (int)offset;
     return inst;
 }

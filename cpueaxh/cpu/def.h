@@ -307,6 +307,54 @@ inline void raise_bp_ctx(CPU_CONTEXT* ctx) { cpu_raise_exception(ctx, CPU_EXCEPT
 inline void raise_db_ctx(CPU_CONTEXT* ctx) { cpu_raise_exception(ctx, CPU_EXCEPTION_DB, 0); }
 inline void raise_of_ctx(CPU_CONTEXT* ctx) { cpu_raise_exception(ctx, CPU_EXCEPTION_OF, 0); }
 
+inline bool cpu_is_canonical_address(uint64_t address) {
+    const uint64_t sign_bit = (address >> 47) & 0x1ULL;
+    const uint64_t upper_bits = address >> 48;
+    return upper_bits == (sign_bit ? 0xFFFFULL : 0x0000ULL);
+}
+
+inline uint64_t cpu_segment_base_for_addressing(const CPU_CONTEXT* ctx, int segment_index) {
+    if (!ctx) {
+        return 0;
+    }
+
+    const SegmentRegister* seg = NULL;
+    switch (segment_index) {
+    case SEG_ES: seg = &ctx->es; break;
+    case SEG_CS: seg = &ctx->cs; break;
+    case SEG_SS: seg = &ctx->ss; break;
+    case SEG_DS: seg = &ctx->ds; break;
+    case SEG_FS: seg = &ctx->fs; break;
+    case SEG_GS: seg = &ctx->gs; break;
+    default:     return 0;
+    }
+
+    if (ctx->cs.descriptor.long_mode && segment_index != SEG_FS && segment_index != SEG_GS) {
+        return 0;
+    }
+
+    return seg->descriptor.base;
+}
+
+inline void cpu_raise_noncanonical_address(CPU_CONTEXT* ctx, int segment_index) {
+    if (segment_index == SEG_SS) {
+        raise_ss_ctx(ctx, 0);
+        return;
+    }
+    raise_gp_ctx(ctx, 0);
+}
+
+inline bool cpu_validate_linear_address(CPU_CONTEXT* ctx, uint64_t address, int segment_index) {
+    if (!ctx || !ctx->cs.descriptor.long_mode) {
+        return true;
+    }
+    if (cpu_is_canonical_address(address)) {
+        return true;
+    }
+    cpu_raise_noncanonical_address(ctx, segment_index);
+    return false;
+}
+
 struct DecodedInstruction {
     uint8_t opcode;
     uint8_t mandatory_prefix;

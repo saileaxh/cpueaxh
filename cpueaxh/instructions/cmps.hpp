@@ -48,8 +48,7 @@ void set_cmps_index(CPU_CONTEXT* ctx, int reg, int address_size, uint64_t value)
 }
 
 uint64_t cmps_segment_base(CPU_CONTEXT* ctx, int seg_index) {
-    SegmentRegister* seg = get_segment_register(ctx, seg_index);
-    return seg ? (uint64_t)seg->descriptor.base : 0;
+    return cpu_segment_base_for_addressing(ctx, seg_index);
 }
 
 uint64_t read_cmps_value(CPU_CONTEXT* ctx, uint64_t address, int operand_size) {

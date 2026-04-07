@@ -34,8 +34,7 @@ uint64_t get_xlat_base_offset(CPU_CONTEXT* ctx, int address_size) {
 }
 
 uint64_t get_xlat_linear_address(CPU_CONTEXT* ctx, int address_size, int segment_index) {
-    SegmentRegister* seg = get_segment_register(ctx, segment_index);
-    uint64_t segment_base = seg ? (uint64_t)seg->descriptor.base : 0;
+    uint64_t segment_base = cpu_segment_base_for_addressing(ctx, segment_index);
     uint64_t offset = get_xlat_base_offset(ctx, address_size) + (uint64_t)get_reg8(ctx, REG_RAX);
 
     if (address_size == 16) {

@@ -177,7 +177,47 @@ void load_segment_register(CPU_CONTEXT* ctx, int seg_index, uint16_t selector) {
     }
 }
 
-uint64_t get_effective_address(CPU_CONTEXT* ctx, uint8_t modrm, uint8_t* sib, int32_t* disp, int addr_size, int inst_size = 0) {
+inline bool cpu_memory_base_register_uses_ss(int reg) {
+    return reg == REG_RSP || reg == REG_RBP || reg == REG_R13;
+}
+
+inline int cpu_default_segment_for_memory_operand(const CPU_CONTEXT* ctx, uint8_t modrm, bool has_sib, uint8_t sib, int addr_size) {
+    const uint8_t mod = (modrm >> 6) & 0x03;
+    const uint8_t rm = modrm & 0x07;
+
+    if (mod == 3) {
+        return SEG_DS;
+    }
+
+    if (addr_size != 16) {
+        if ((rm & 0x07) == 4 && has_sib) {
+            uint8_t base = sib & 0x07;
+            if (ctx && ctx->rex_b && addr_size == 64) {
+                base |= 0x08;
+            }
+            if (!(base == 5 && mod == 0) && cpu_memory_base_register_uses_ss(base)) {
+                return SEG_SS;
+            }
+        }
+        else {
+            int decoded_rm = rm;
+            if (ctx && ctx->rex_b && addr_size == 64) {
+                decoded_rm |= 0x08;
+            }
+            if (!(mod == 0 && (rm & 0x07) == 5 && !(ctx && ctx->rex_b && addr_size == 64)) &&
+                cpu_memory_base_register_uses_ss(decoded_rm)) {
+                return SEG_SS;
+            }
+        }
+    }
+    else if (rm == 2 || rm == 3 || ((rm == 6) && mod != 0)) {
+        return SEG_SS;
+    }
+
+    return SEG_DS;
+}
+
+uint64_t get_effective_offset(CPU_CONTEXT* ctx, uint8_t modrm, uint8_t* sib, int32_t* disp, int addr_size, int inst_size = 0) {
     uint8_t mod = (modrm >> 6) & 0x03;
     uint8_t rm = modrm & 0x07;
 
@@ -275,6 +315,19 @@ uint64_t get_effective_address(CPU_CONTEXT* ctx, uint8_t modrm, uint8_t* sib, in
         }
     }
 
+    return addr;
+}
+
+uint64_t get_effective_address(CPU_CONTEXT* ctx, uint8_t modrm, uint8_t* sib, int32_t* disp, int addr_size, int inst_size = 0) {
+    const uint8_t mod = (modrm >> 6) & 0x03;
+    uint64_t addr = get_effective_offset(ctx, modrm, sib, disp, addr_size, inst_size);
+    if (mod == 3) {
+        return addr;
+    }
+
+    const int segment_index = cpu_default_segment_for_memory_operand(ctx, modrm, sib != NULL, sib ? *sib : 0, addr_size);
+    addr += cpu_segment_base_for_addressing(ctx, segment_index);
+    cpu_validate_linear_address(ctx, addr, segment_index);
     return addr;
 }
 

@@ -13,8 +13,7 @@ static int decode_pcmpistrm_segment_override(uint8_t prefix) {
 }
 
 static uint64_t pcmpistrm_segment_base(CPU_CONTEXT* ctx, int segment_index) {
-    SegmentRegister* seg = get_segment_register(ctx, segment_index);
-    return seg ? seg->descriptor.base : 0;
+    return cpu_segment_base_for_addressing(ctx, segment_index);
 }
 
 static int decode_pcmpistrm_xmm_reg_index(CPU_CONTEXT* ctx, uint8_t modrm) {
@@ -197,32 +196,12 @@ DecodedInstruction decode_pcmpistrm_instruction(CPU_CONTEXT* ctx, uint8_t* code,
     inst.inst_size = (int)offset;
     finalize_rip_relative_address(ctx, &inst, (int)offset);
 
-    if (inst.has_modrm) {
+    if (inst.has_modrm && has_segment_override) {
         uint8_t mod = (inst.modrm >> 6) & 0x03;
         if (mod != 3) {
-            int effective_segment = segment_index;
-            if (!has_segment_override) {
-                uint8_t rm = inst.modrm & 0x07;
-                if (inst.address_size != 16) {
-                    if ((rm & 0x07) == 4 && inst.has_sib) {
-                        uint8_t base = inst.sib & 0x07;
-                        if (ctx->rex_b && inst.address_size == 64) {
-                            base |= 0x08;
-                        }
-                        if (!(base == 5 && mod == 0) && (base == REG_RSP || base == REG_RBP)) {
-                            effective_segment = SEG_SS;
-                        }
-                    }
-                    else if (!(mod == 0 && (rm & 0x07) == 5) && (rm == REG_RSP || rm == REG_RBP)) {
-                        effective_segment = SEG_SS;
-                    }
-                }
-                else if (rm == 2 || rm == 3 || ((rm == 6) && mod != 0)) {
-                    effective_segment = SEG_SS;
-                }
-            }
-
-            inst.mem_address += pcmpistrm_segment_base(ctx, effective_segment);
+            const int default_segment = cpu_default_segment_for_memory_operand(ctx, inst.modrm, inst.has_sib, inst.sib, inst.address_size);
+            inst.mem_address += pcmpistrm_segment_base(ctx, segment_index) - pcmpistrm_segment_base(ctx, default_segment);
+            cpu_validate_linear_address(ctx, inst.mem_address, segment_index);
         }
     }
 

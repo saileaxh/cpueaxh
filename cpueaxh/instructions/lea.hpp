@@ -92,7 +92,7 @@ uint64_t calculate_lea_address(CPU_CONTEXT* ctx, uint8_t modrm, bool has_sib, ui
         return addr;
     }
 
-    return get_effective_address(ctx, modrm, &sib, &disp, address_size);
+    return get_effective_offset(ctx, modrm, &sib, &disp, address_size);
 }
 
 void write_lea_reg_operand(CPU_CONTEXT* ctx, uint8_t modrm, int operand_size, uint64_t value) {

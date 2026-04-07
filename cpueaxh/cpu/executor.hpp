@@ -335,7 +335,7 @@ static int cpu_step_with_prefetch(CPU_CONTEXT* ctx, const uint8_t* prefetched_by
         execute_ret(ctx, buf, (size_t)fetched);
     }
     // IRET/IRETQ: CF
-    else if (raw_opc == 0xCF) {
+    else if (opc == 0x00CF) {
         execute_iret(ctx, buf, (size_t)fetched);
     }
     // Supported two-byte 0F xx opcodes (dispatch before single-byte low-byte aliases)

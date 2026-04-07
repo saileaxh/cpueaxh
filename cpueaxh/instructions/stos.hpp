@@ -48,8 +48,7 @@ void set_stos_index(CPU_CONTEXT* ctx, int address_size, uint64_t value) {
 }
 
 uint64_t stos_segment_base(CPU_CONTEXT* ctx) {
-    SegmentRegister* seg = get_segment_register(ctx, SEG_ES);
-    return seg ? (uint64_t)seg->descriptor.base : 0;
+    return cpu_segment_base_for_addressing(ctx, SEG_ES);
 }
 
 uint64_t read_stos_accumulator(CPU_CONTEXT* ctx, int operand_size) {
