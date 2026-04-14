@@ -1,6 +1,6 @@
 // instrusments/rep.hpp - REP/REPNE prefix implementation
 
-uint8_t decode_rep_prefix(const uint8_t* code, size_t code_size, size_t* prefix_len) {
+uint8_t decode_rep_prefix(CPU_CONTEXT* ctx, const uint8_t* code, size_t code_size, size_t* prefix_len) {
     size_t offset = 0;
     uint8_t rep_prefix = 0;
 
@@ -10,7 +10,7 @@ uint8_t decode_rep_prefix(const uint8_t* code, size_t code_size, size_t* prefix_
             prefix == 0x64 || prefix == 0x65 ||
             prefix == 0x66 || prefix == 0x67 ||
             prefix == 0xF0 ||
-            (prefix >= 0x40 && prefix <= 0x4F)) {
+            cpu_try_apply_rex_prefix(ctx, prefix)) {
             offset++;
         }
         else if (prefix == 0xF2 || prefix == 0xF3) {
@@ -113,7 +113,8 @@ void execute_rep_iteration(CPU_CONTEXT* ctx, uint8_t opcode, uint8_t* code, size
 
 void execute_rep(CPU_CONTEXT* ctx, uint8_t* code, size_t code_size) {
     size_t prefix_len = 0;
-    uint8_t rep_prefix = decode_rep_prefix(code, code_size, &prefix_len);
+    cpu_reset_prefix_state(ctx);
+    uint8_t rep_prefix = decode_rep_prefix(ctx, code, code_size, &prefix_len);
     if (rep_prefix != 0xF2 && rep_prefix != 0xF3) {
         raise_ud_ctx(ctx);
     }

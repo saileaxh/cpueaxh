@@ -4,7 +4,7 @@ static const uint64_t PUSHF_RF_BIT = (1ULL << 16);
 static const uint64_t PUSHF_VM_BIT = (1ULL << 17);
 
 int decode_pushf_operand_size(CPU_CONTEXT* ctx) {
-    if (ctx->cs.descriptor.long_mode) {
+    if (cpu_is_64bit_code(ctx)) {
         return ctx->operand_size_override ? 16 : 64;
     }
     return ctx->operand_size_override ? 16 : 32;
@@ -66,13 +66,7 @@ DecodedInstruction decode_pushf_instruction(CPU_CONTEXT* ctx, uint8_t* code, siz
     size_t offset = 0;
     bool has_lock_prefix = false;
 
-    ctx->rex_present = false;
-    ctx->rex_w = false;
-    ctx->rex_r = false;
-    ctx->rex_x = false;
-    ctx->rex_b = false;
-    ctx->operand_size_override = false;
-    ctx->address_size_override = false;
+    cpu_reset_prefix_state(ctx);
 
     while (offset < code_size) {
         uint8_t prefix = code[offset];
@@ -84,12 +78,7 @@ DecodedInstruction decode_pushf_instruction(CPU_CONTEXT* ctx, uint8_t* code, siz
             ctx->address_size_override = true;
             offset++;
         }
-        else if (prefix >= 0x40 && prefix <= 0x4F) {
-            ctx->rex_present = true;
-            ctx->rex_w = (prefix >> 3) & 1;
-            ctx->rex_r = (prefix >> 2) & 1;
-            ctx->rex_x = (prefix >> 1) & 1;
-            ctx->rex_b = prefix & 1;
+        else if (cpu_try_apply_rex_prefix(ctx, prefix)) {
             offset++;
         }
         else if (prefix == 0xF0) {

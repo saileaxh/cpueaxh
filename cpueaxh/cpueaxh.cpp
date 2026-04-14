@@ -308,6 +308,7 @@ static void cpueaxh_context_in(CPU_CONTEXT* out_context, const cpueaxh_x86_conte
     cpueaxh_copy_segment_in(&out_context->ds, &in_context->ds);
     cpueaxh_copy_segment_in(&out_context->fs, &in_context->fs);
     cpueaxh_copy_segment_in(&out_context->gs, &in_context->gs);
+    out_context->long_mode_active = true;
     out_context->gdtr_base = in_context->gdtr_base;
     out_context->gdtr_limit = in_context->gdtr_limit;
     out_context->ldtr_base = in_context->ldtr_base;
@@ -501,7 +502,7 @@ static cpueaxh_escape_insn_id cpueaxh_classify_escape_instruction(const uint8_t*
     *instruction_size = 0;
 
     int prefix_len = 0;
-    uint16_t opc = peek_opcode(bytes, fetched, &prefix_len);
+    uint16_t opc = peek_opcode(NULL, bytes, fetched, &prefix_len);
     if (opc == 0xFFFF) {
         return CPUEAXH_ESCAPE_INSN_NONE;
     }
@@ -1047,7 +1048,7 @@ extern "C" cpueaxh_err cpueaxh_open(uint32_t arch, uint32_t mode, cpueaxh_engine
         *out_engine = NULL;
         return CPUEAXH_ERR_ARCH;
     }
-    if (mode != CPUEAXH_MODE_64) {
+    if (mode != CPUEAXH_MODE_64 && mode != CPUEAXH_MODE_COMPAT32) {
         *out_engine = NULL;
         return CPUEAXH_ERR_MODE;
     }
@@ -1059,7 +1060,7 @@ extern "C" cpueaxh_err cpueaxh_open(uint32_t arch, uint32_t mode, cpueaxh_engine
     }
 
     mm_init(&engine->memory_manager);
-    init_cpu_context(&engine->context, &engine->memory_manager);
+    init_cpu_context(&engine->context, &engine->memory_manager, mode == CPUEAXH_MODE_COMPAT32);
     engine->context.owner_engine = engine;
     engine->next_hook = 1;
     engine->memory_mode = CPUEAXH_MEMORY_MODE_GUEST;

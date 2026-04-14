@@ -199,13 +199,7 @@ DecodedInstruction decode_inc_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
     DecodedInstruction inst = {};
     size_t offset = 0;
 
-    ctx->rex_present = false;
-    ctx->rex_w = false;
-    ctx->rex_r = false;
-    ctx->rex_x = false;
-    ctx->rex_b = false;
-    ctx->operand_size_override = false;
-    ctx->address_size_override = false;
+    cpu_reset_prefix_state(ctx);
 
     bool has_lock_prefix = false;
 
@@ -219,12 +213,7 @@ DecodedInstruction decode_inc_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
             ctx->address_size_override = true;
             offset++;
         }
-        else if (prefix >= 0x40 && prefix <= 0x4F) {
-            ctx->rex_present = true;
-            ctx->rex_w = (prefix >> 3) & 1;
-            ctx->rex_r = (prefix >> 2) & 1;
-            ctx->rex_x = (prefix >> 1) & 1;
-            ctx->rex_b = prefix & 1;
+        else if (cpu_try_apply_rex_prefix(ctx, prefix)) {
             offset++;
         }
         else if (prefix == 0xF0) {
@@ -253,15 +242,19 @@ DecodedInstruction decode_inc_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
         inst.operand_size = 16;
     }
 
-    if (ctx->cs.descriptor.long_mode) {
-        inst.address_size = ctx->address_size_override ? 32 : 64;
-    }
-    else {
-        inst.address_size = ctx->address_size_override ? 16 : 32;
-    }
+    inst.address_size = ctx->address_size_override
+        ? (cpu_default_address_size(ctx) == 64 ? 32 : 16)
+        : cpu_default_address_size(ctx);
     inst.has_lock_prefix = has_lock_prefix;
 
     switch (inst.opcode) {
+    case 0x40: case 0x41: case 0x42: case 0x43:
+    case 0x44: case 0x45: case 0x46: case 0x47:
+        if (cpu_is_64bit_code(ctx)) {
+            raise_ud_ctx(ctx);
+            break;
+        }
+        break;
     // FE /0 - INC r/m8
     case 0xFE:
         inst.operand_size = 8;
@@ -294,6 +287,18 @@ void execute_inc(CPU_CONTEXT* ctx, uint8_t* code, size_t code_size) {
     DecodedInstruction inst = decode_inc_instruction(ctx, code, code_size);
 
     switch (inst.opcode) {
+    case 0x40: case 0x41: case 0x42: case 0x43:
+    case 0x44: case 0x45: case 0x46: case 0x47:
+        {
+        const uint8_t reg_modrm = (uint8_t)(0xC0u | (inst.opcode - 0x40u));
+        if (ctx->operand_size_override) {
+            inc_rm16(ctx, reg_modrm, 0, 0, 0, false);
+        }
+        else {
+            inc_rm32(ctx, reg_modrm, 0, 0, 0, false);
+        }
+        break;
+        }
     // FE /0 - INC r/m8
     case 0xFE:
         inc_rm8(ctx, inst.modrm, inst.sib, inst.displacement, inst.mem_address, inst.has_lock_prefix);

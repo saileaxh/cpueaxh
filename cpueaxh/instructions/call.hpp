@@ -79,7 +79,7 @@ void call_far_mem(CPU_CONTEXT* ctx, uint64_t mem_addr, int operand_size, uint64_
     }
 
     // L=1 and D=1 is invalid in long mode
-    if (ctx->cs.descriptor.long_mode && new_desc.long_mode && new_desc.db) {
+    if (cpu_long_mode_active(ctx) && new_desc.long_mode && new_desc.db) {
         raise_gp_ctx(ctx, new_selector & 0xFFFC);
     }
 
@@ -122,7 +122,7 @@ void call_far_mem(CPU_CONTEXT* ctx, uint64_t mem_addr, int operand_size, uint64_
 
     // Push old CS and RIP (return address)
     // In 64-bit mode, CS is pushed as 64-bit (padded with 48 high-order bits of 0)
-    if (ctx->cs.descriptor.long_mode) {
+    if (cpu_is_64bit_code(ctx)) {
         push_value64(ctx, (uint64_t)ctx->cs.selector);
         push_value64(ctx, return_rip);
     }
@@ -261,13 +261,7 @@ DecodedInstruction decode_call_instruction(CPU_CONTEXT* ctx, uint8_t* code, size
     DecodedInstruction inst = {};
     size_t offset = 0;
 
-    ctx->rex_present = false;
-    ctx->rex_w = false;
-    ctx->rex_r = false;
-    ctx->rex_x = false;
-    ctx->rex_b = false;
-    ctx->operand_size_override = false;
-    ctx->address_size_override = false;
+    cpu_reset_prefix_state(ctx);
 
     // Decode prefixes
     while (offset < code_size) {
@@ -280,12 +274,7 @@ DecodedInstruction decode_call_instruction(CPU_CONTEXT* ctx, uint8_t* code, size
             ctx->address_size_override = true;
             offset++;
         }
-        else if (prefix >= 0x40 && prefix <= 0x4F) {
-            ctx->rex_present = true;
-            ctx->rex_w = (prefix >> 3) & 1;
-            ctx->rex_r = (prefix >> 2) & 1;
-            ctx->rex_x = (prefix >> 1) & 1;
-            ctx->rex_b = prefix & 1;
+        else if (cpu_try_apply_rex_prefix(ctx, prefix)) {
             offset++;
         }
         else if (prefix == 0xF0) {
@@ -311,7 +300,7 @@ DecodedInstruction decode_call_instruction(CPU_CONTEXT* ctx, uint8_t* code, size
     // 0x66 can demote to 16 for E8 rel16 (but it's N.S. - not supported)
     // For FF /2 in 64-bit mode, operand size is forced to 64
     // For FF /3 (far call), operand size follows normal rules
-    if (ctx->cs.descriptor.long_mode) {
+    if (cpu_is_64bit_code(ctx)) {
         // Default for near calls is 64 in 64-bit mode
         if (ctx->operand_size_override) {
             inst.operand_size = 16;
@@ -331,17 +320,14 @@ DecodedInstruction decode_call_instruction(CPU_CONTEXT* ctx, uint8_t* code, size
     }
 
     // Determine address size
-    if (ctx->cs.descriptor.long_mode) {
-        inst.address_size = ctx->address_size_override ? 32 : 64;
-    }
-    else {
-        inst.address_size = ctx->address_size_override ? 16 : 32;
-    }
+    inst.address_size = ctx->address_size_override
+        ? (cpu_default_address_size(ctx) == 64 ? 32 : 16)
+        : cpu_default_address_size(ctx);
 
     switch (inst.opcode) {
     // E8 cw/cd - CALL rel16/rel32
     case 0xE8:
-        if (ctx->cs.descriptor.long_mode) {
+        if (cpu_is_64bit_code(ctx)) {
             // In 64-bit mode: always rel32, sign-extended to 64 bits
             // 0x66 prefix makes it rel16 but it's N.S. (not supported);
             // we still handle it for completeness
@@ -382,7 +368,7 @@ DecodedInstruction decode_call_instruction(CPU_CONTEXT* ctx, uint8_t* code, size
             if (reg_field == 2) {
                 // Near indirect call FF /2
                 // In 64-bit mode, operand size is forced to 64
-                if (ctx->cs.descriptor.long_mode) {
+                if (cpu_is_64bit_code(ctx)) {
                     inst.operand_size = 64;
                 }
             }
@@ -396,7 +382,7 @@ DecodedInstruction decode_call_instruction(CPU_CONTEXT* ctx, uint8_t* code, size
                 // In 64-bit mode: if REX.W, operand size = 64 (m16:64)
                 // otherwise if 0x66, operand size = 16 (m16:16)
                 // otherwise operand size = 32 (m16:32)
-                if (ctx->cs.descriptor.long_mode) {
+                if (cpu_is_64bit_code(ctx)) {
                     if (ctx->rex_w) {
                         inst.operand_size = 64;
                     }
@@ -416,7 +402,7 @@ DecodedInstruction decode_call_instruction(CPU_CONTEXT* ctx, uint8_t* code, size
 
     // 9A cd/cp - CALL ptr16:16 / CALL ptr16:32 (invalid in 64-bit mode)
     case 0x9A:
-        if (ctx->cs.descriptor.long_mode) {
+        if (cpu_is_64bit_code(ctx)) {
             raise_ud_ctx(ctx);
         }
         // Read immediate far pointer: offset then selector

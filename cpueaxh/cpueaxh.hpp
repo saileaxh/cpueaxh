@@ -118,6 +118,7 @@ typedef cpueaxh_err (*cpueaxh_cb_escape_t)(cpueaxh_engine* engine, cpueaxh_x86_c
 #define CPUEAXH_ERR_PATCH 14
 
 #define CPUEAXH_ARCH_X86 1u
+#define CPUEAXH_MODE_COMPAT32 4u
 #define CPUEAXH_MODE_64 8u
 
 #define CPUEAXH_MEMORY_MODE_GUEST 0u

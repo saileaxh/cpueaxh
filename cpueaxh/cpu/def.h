@@ -134,6 +134,7 @@ struct CPU_CONTEXT {
     uint64_t regs[16];
     uint64_t control_regs[16];
     uint32_t processor_id;
+    bool long_mode_active;
     XMMRegister xmm[16];
     XMMRegister ymm_upper[16];
     ZMMUpperRegister zmm_upper[16];
@@ -220,6 +221,7 @@ inline int cpu_effective_segment_override_or_default(const CPU_CONTEXT* ctx, int
 struct CPU_SCALAR_SNAPSHOT {
     uint64_t regs[16];
     uint64_t control_regs[16];
+    bool long_mode_active;
     SegmentRegister es;
     SegmentRegister cs;
     SegmentRegister ss;
@@ -267,6 +269,7 @@ inline void cpu_capture_scalar_snapshot(CPU_SCALAR_SNAPSHOT* out, const CPU_CONT
 
     CPUEAXH_MEMCPY(out->regs, ctx->regs, sizeof(out->regs));
     CPUEAXH_MEMCPY(out->control_regs, ctx->control_regs, sizeof(out->control_regs));
+    out->long_mode_active = ctx->long_mode_active;
     out->es = ctx->es;
     out->cs = ctx->cs;
     out->ss = ctx->ss;
@@ -305,6 +308,7 @@ inline void cpu_restore_scalar_snapshot(CPU_CONTEXT* ctx, const CPU_SCALAR_SNAPS
 
     CPUEAXH_MEMCPY(ctx->regs, snapshot->regs, sizeof(snapshot->regs));
     CPUEAXH_MEMCPY(ctx->control_regs, snapshot->control_regs, sizeof(snapshot->control_regs));
+    ctx->long_mode_active = snapshot->long_mode_active;
     ctx->es = snapshot->es;
     ctx->cs = snapshot->cs;
     ctx->ss = snapshot->ss;
@@ -448,6 +452,71 @@ inline int cpu_decode_segment_override(uint8_t prefix) {
 
 inline int cpu_effective_segment_override_or_default(const CPU_CONTEXT* ctx, int default_segment);
 
+inline bool cpu_long_mode_active(const CPU_CONTEXT* ctx) {
+    return ctx && ctx->long_mode_active;
+}
+
+inline bool cpu_is_64bit_code(const CPU_CONTEXT* ctx) {
+    return cpu_long_mode_active(ctx) && ctx->cs.descriptor.long_mode;
+}
+
+inline bool cpu_is_compatibility_code(const CPU_CONTEXT* ctx) {
+    return cpu_long_mode_active(ctx) && !ctx->cs.descriptor.long_mode;
+}
+
+inline bool cpu_is_compat32_code(const CPU_CONTEXT* ctx) {
+    return cpu_is_compatibility_code(ctx) && ctx->cs.descriptor.db;
+}
+
+inline bool cpu_allows_rex_prefix(const CPU_CONTEXT* ctx) {
+    return cpu_is_64bit_code(ctx);
+}
+
+inline bool cpu_uses_flat_segment_bases(const CPU_CONTEXT* ctx) {
+    return cpu_is_64bit_code(ctx);
+}
+
+inline bool cpu_uses_canonical_addresses(const CPU_CONTEXT* ctx) {
+    return cpu_is_64bit_code(ctx);
+}
+
+inline int cpu_default_address_size(const CPU_CONTEXT* ctx) {
+    if (!ctx) {
+        return 16;
+    }
+    if (cpu_is_64bit_code(ctx)) {
+        return 64;
+    }
+    return ctx->cs.descriptor.db ? 32 : 16;
+}
+
+inline int cpu_default_operand_size(const CPU_CONTEXT* ctx) {
+    if (!ctx) {
+        return 16;
+    }
+    return ctx->cs.descriptor.db ? 32 : 16;
+}
+
+inline int cpu_stack_address_size(const CPU_CONTEXT* ctx) {
+    if (!ctx) {
+        return 16;
+    }
+    if (cpu_is_64bit_code(ctx)) {
+        return 64;
+    }
+    return ctx->ss.descriptor.db ? 32 : 16;
+}
+
+inline uint64_t cpu_mask_code_offset(uint64_t value, int operand_size) {
+    if (operand_size == 16) {
+        return (uint16_t)value;
+    }
+    if (operand_size == 32) {
+        return (uint32_t)value;
+    }
+    return value;
+}
+
 inline bool cpu_is_canonical_address(uint64_t address) {
     const uint64_t sign_bit = (address >> 47) & 0x1ULL;
     const uint64_t upper_bits = address >> 48;
@@ -470,7 +539,7 @@ inline uint64_t cpu_segment_base_for_addressing(const CPU_CONTEXT* ctx, int segm
     default:     return 0;
     }
 
-    if (ctx->cs.descriptor.long_mode && segment_index != SEG_FS && segment_index != SEG_GS) {
+    if (cpu_uses_flat_segment_bases(ctx) && segment_index != SEG_FS && segment_index != SEG_GS) {
         return 0;
     }
 
@@ -486,7 +555,7 @@ inline void cpu_raise_noncanonical_address(CPU_CONTEXT* ctx, int segment_index) 
 }
 
 inline bool cpu_validate_linear_address(CPU_CONTEXT* ctx, uint64_t address, int segment_index) {
-    if (!ctx || !ctx->cs.descriptor.long_mode) {
+    if (!ctx || !cpu_uses_canonical_addresses(ctx)) {
         return true;
     }
     if (cpu_is_canonical_address(address)) {

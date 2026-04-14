@@ -1,14 +1,14 @@
 // instrusments/leave.hpp - LEAVE instruction implementation
 
 int decode_leave_operand_size(CPU_CONTEXT* ctx) {
-    if (ctx->cs.descriptor.long_mode) {
+    if (cpu_is_64bit_code(ctx)) {
         return ctx->operand_size_override ? 16 : 64;
     }
     return ctx->operand_size_override ? 16 : 32;
 }
 
 int decode_leave_stack_addr_size(CPU_CONTEXT* ctx) {
-    if (ctx->cs.descriptor.long_mode) {
+    if (cpu_is_64bit_code(ctx)) {
         return ctx->address_size_override ? 32 : 64;
     }
 
@@ -97,13 +97,7 @@ DecodedInstruction decode_leave_instruction(CPU_CONTEXT* ctx, uint8_t* code, siz
     DecodedInstruction inst = {};
     size_t offset = 0;
 
-    ctx->rex_present = false;
-    ctx->rex_w = false;
-    ctx->rex_r = false;
-    ctx->rex_x = false;
-    ctx->rex_b = false;
-    ctx->operand_size_override = false;
-    ctx->address_size_override = false;
+    cpu_reset_prefix_state(ctx);
 
     bool has_lock_prefix = false;
 
@@ -117,12 +111,7 @@ DecodedInstruction decode_leave_instruction(CPU_CONTEXT* ctx, uint8_t* code, siz
             ctx->address_size_override = true;
             offset++;
         }
-        else if (prefix >= 0x40 && prefix <= 0x4F) {
-            ctx->rex_present = true;
-            ctx->rex_w = (prefix >> 3) & 1;
-            ctx->rex_r = (prefix >> 2) & 1;
-            ctx->rex_x = (prefix >> 1) & 1;
-            ctx->rex_b = prefix & 1;
+        else if (cpu_try_apply_rex_prefix(ctx, prefix)) {
             offset++;
         }
         else if (prefix == 0xF0) {

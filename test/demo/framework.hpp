@@ -19,7 +19,7 @@
 #include "cpu/def.h"
 #include "memory/manager.hpp"
 
-void init_cpu_context(CPU_CONTEXT* ctx, MEMORY_MANAGER* mem_mgr);
+void init_cpu_context(CPU_CONTEXT* ctx, MEMORY_MANAGER* mem_mgr, bool start_in_compat32 = false);
 int cpu_step(CPU_CONTEXT* ctx);
 
 constexpr int kCpuStepOk = 0;
@@ -49,6 +49,7 @@ constexpr std::uint64_t kHostStackSeedCount = 64;
 constexpr std::uint64_t kContextApiSeedCount = 128;
 constexpr std::uint64_t kGuestCodeBase = 0x100000;
 constexpr std::uint64_t kGuestStackBase = 0x200000;
+constexpr std::uint64_t kGuestGdtBase = 0x300000;
 constexpr std::size_t kCodePageSize = 0x1000;
 constexpr std::size_t kStackSize = 0x4000;
 constexpr std::size_t kSlotSize = 16;
@@ -3078,6 +3079,348 @@ inline bool write_internal_dword(MEMORY_MANAGER& memory_manager, std::uint64_t a
     return true;
 }
 
+inline std::uint64_t encode_segment_descriptor(std::uint32_t base, std::uint32_t limit, std::uint8_t type, std::uint8_t dpl, bool present, bool granularity, bool db, bool long_mode) {
+    std::uint64_t descriptor = 0;
+    descriptor |= static_cast<std::uint64_t>(limit & 0xFFFFu);
+    descriptor |= static_cast<std::uint64_t>(base & 0xFFFFu) << 16;
+    descriptor |= static_cast<std::uint64_t>((base >> 16) & 0xFFu) << 32;
+
+    std::uint8_t access = static_cast<std::uint8_t>(0x10u | (type & 0x0Fu));
+    access |= static_cast<std::uint8_t>((dpl & 0x03u) << 5);
+    if (present) {
+        access |= 0x80u;
+    }
+    descriptor |= static_cast<std::uint64_t>(access) << 40;
+
+    std::uint8_t flags = static_cast<std::uint8_t>((limit >> 16) & 0x0Fu);
+    if (long_mode) {
+        flags |= 0x20u;
+    }
+    if (db) {
+        flags |= 0x40u;
+    }
+    if (granularity) {
+        flags |= 0x80u;
+    }
+    descriptor |= static_cast<std::uint64_t>(flags) << 48;
+    descriptor |= static_cast<std::uint64_t>((base >> 24) & 0xFFu) << 56;
+    return descriptor;
+}
+
+inline bool write_engine_qword(cpueaxh_engine* engine, std::uint64_t address, std::uint64_t value) {
+    return cpueaxh_mem_write(engine, address, &value, sizeof(value)) == CPUEAXH_ERR_OK;
+}
+
+inline bool write_engine_dword(cpueaxh_engine* engine, std::uint64_t address, std::uint32_t value) {
+    return cpueaxh_mem_write(engine, address, &value, sizeof(value)) == CPUEAXH_ERR_OK;
+}
+
+inline bool configure_compat32_segments(cpueaxh_engine* engine, Failure& failure, const std::string& name) {
+    const std::uint64_t descriptors[] = {
+        0,
+        encode_segment_descriptor(0, 0x000FFFFFu, 0x0Bu, 0, true, true, false, true),
+        encode_segment_descriptor(0, 0x000FFFFFu, 0x0Bu, 0, true, true, true, false),
+        encode_segment_descriptor(0, 0x000FFFFFu, 0x03u, 0, true, true, true, false)
+    };
+
+    if (cpueaxh_mem_map(engine, kGuestGdtBase, kCodePageSize, CPUEAXH_PROT_READ | CPUEAXH_PROT_WRITE) != CPUEAXH_ERR_OK) {
+        failure.case_name = name;
+        failure.detail = "gdt map failed";
+        return false;
+    }
+    if (cpueaxh_mem_write(engine, kGuestGdtBase, descriptors, sizeof(descriptors)) != CPUEAXH_ERR_OK) {
+        failure.case_name = name;
+        failure.detail = "gdt write failed";
+        return false;
+    }
+
+    if (!write_engine_reg(engine, CPUEAXH_X86_REG_GDTR_BASE, kGuestGdtBase) ||
+        !write_engine_reg16(engine, CPUEAXH_X86_REG_GDTR_LIMIT, static_cast<std::uint16_t>(sizeof(descriptors) - 1)) ||
+        !write_engine_reg16(engine, CPUEAXH_X86_REG_CS_SELECTOR, 0x10u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_CS_TYPE, 0x0Bu) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_CS_DPL, 0u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_CS_PRESENT, 1u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_CS_GRANULARITY, 1u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_CS_DB, 1u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_CS_LONG_MODE, 0u) ||
+        !write_engine_reg16(engine, CPUEAXH_X86_REG_SS_SELECTOR, 0x18u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_SS_TYPE, 0x03u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_SS_DPL, 0u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_SS_PRESENT, 1u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_SS_GRANULARITY, 1u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_SS_DB, 1u) ||
+        !write_engine_reg16(engine, CPUEAXH_X86_REG_DS_SELECTOR, 0x18u) ||
+        !write_engine_reg16(engine, CPUEAXH_X86_REG_ES_SELECTOR, 0x18u)) {
+        failure.case_name = name;
+        failure.detail = "compat32 segment setup failed";
+        return false;
+    }
+
+    return true;
+}
+
+inline bool configure_compat32_user_segments(cpueaxh_engine* engine, Failure& failure, const std::string& name) {
+    const std::uint64_t descriptors[] = {
+        0,
+        0,
+        0,
+        0,
+        encode_segment_descriptor(0, 0x000FFFFFu, 0x0Bu, 3, true, true, true, false),
+        encode_segment_descriptor(0, 0x000FFFFFu, 0x03u, 3, true, true, true, false),
+        encode_segment_descriptor(0, 0x000FFFFFu, 0x0Bu, 3, true, true, false, true)
+    };
+
+    if (cpueaxh_mem_map(engine, kGuestGdtBase, kCodePageSize, CPUEAXH_PROT_READ | CPUEAXH_PROT_WRITE) != CPUEAXH_ERR_OK) {
+        failure.case_name = name;
+        failure.detail = "user gdt map failed";
+        return false;
+    }
+    if (cpueaxh_mem_write(engine, kGuestGdtBase, descriptors, sizeof(descriptors)) != CPUEAXH_ERR_OK) {
+        failure.case_name = name;
+        failure.detail = "user gdt write failed";
+        return false;
+    }
+
+    if (!write_engine_reg(engine, CPUEAXH_X86_REG_GDTR_BASE, kGuestGdtBase) ||
+        !write_engine_reg16(engine, CPUEAXH_X86_REG_GDTR_LIMIT, static_cast<std::uint16_t>(sizeof(descriptors) - 1)) ||
+        !write_engine_reg(engine, CPUEAXH_X86_REG_CPL, 3u) ||
+        !write_engine_reg16(engine, CPUEAXH_X86_REG_CS_SELECTOR, 0x23u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_CS_TYPE, 0x0Bu) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_CS_DPL, 3u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_CS_PRESENT, 1u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_CS_GRANULARITY, 1u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_CS_DB, 1u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_CS_LONG_MODE, 0u) ||
+        !write_engine_reg16(engine, CPUEAXH_X86_REG_SS_SELECTOR, 0x2Bu) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_SS_TYPE, 0x03u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_SS_DPL, 3u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_SS_PRESENT, 1u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_SS_GRANULARITY, 1u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_SS_DB, 1u) ||
+        !write_engine_reg16(engine, CPUEAXH_X86_REG_DS_SELECTOR, 0x2Bu) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_DS_TYPE, 0x03u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_DS_DPL, 3u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_DS_PRESENT, 1u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_DS_GRANULARITY, 1u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_DS_DB, 1u) ||
+        !write_engine_reg16(engine, CPUEAXH_X86_REG_ES_SELECTOR, 0x2Bu) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_ES_TYPE, 0x03u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_ES_DPL, 3u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_ES_PRESENT, 1u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_ES_GRANULARITY, 1u) ||
+        !write_engine_reg32(engine, CPUEAXH_X86_REG_ES_DB, 1u)) {
+        failure.case_name = name;
+        failure.detail = "compat32 user segment setup failed";
+        return false;
+    }
+
+    return true;
+}
+
+inline bool run_compat32_near_ret_case(const std::string& name, std::uint64_t seed, bool adjust_stack, Failure& failure) {
+    cpueaxh_engine* engine = nullptr;
+    if (cpueaxh_open(CPUEAXH_ARCH_X86, CPUEAXH_MODE_COMPAT32, &engine) != CPUEAXH_ERR_OK) {
+        failure.case_name = name;
+        failure.detail = "cpueaxh_open compat32 failed";
+        return false;
+    }
+
+    const std::vector<std::uint8_t> code = adjust_stack
+        ? std::vector<std::uint8_t>{ 0xC2, 0x04, 0x00 }
+        : std::vector<std::uint8_t>{ 0xC3 };
+    const std::uint64_t guest_rsp = kGuestStackBase + kInitialRspOffset;
+    const std::uint32_t return_target = static_cast<std::uint32_t>(kGuestCodeBase + 0x40u);
+    const std::uint32_t stack_tail = static_cast<std::uint32_t>(seeded(seed, 0xE121));
+
+    bool ok = false;
+    do {
+        cpueaxh_x86_context initial = make_initial_context(seed);
+        if (!initialize_manual_engine(engine, code, initial, guest_rsp, failure, name)) {
+            break;
+        }
+        if (!configure_compat32_segments(engine, failure, name)) {
+            break;
+        }
+        if (!write_engine_dword(engine, guest_rsp, return_target) ||
+            (adjust_stack && !write_engine_dword(engine, guest_rsp + 4, stack_tail))) {
+            failure.case_name = name;
+            failure.detail = "stack seed failed";
+            break;
+        }
+
+        const cpueaxh_err err = cpueaxh_emu_start_function(engine, kGuestCodeBase, 0, 1);
+        if (err != CPUEAXH_ERR_OK || cpueaxh_code_exception(engine) != CPUEAXH_EXCEPTION_NONE) {
+            failure.case_name = name;
+            failure.detail = "near ret execution failed";
+            break;
+        }
+
+        std::uint64_t rip = 0;
+        std::uint64_t rsp = 0;
+        if (!read_engine_reg(engine, CPUEAXH_X86_REG_RIP, rip) ||
+            !read_engine_reg(engine, CPUEAXH_X86_REG_RSP, rsp)) {
+            failure.case_name = name;
+            failure.detail = "near ret readback failed";
+            break;
+        }
+
+        const std::uint64_t expected_rsp = guest_rsp + 4u + (adjust_stack ? 4u : 0u);
+        if (rip != return_target || (rsp & 0xFFFFFFFFull) != expected_rsp) {
+            failure.case_name = name;
+            failure.detail = "near ret state mismatch";
+            break;
+        }
+
+        ok = true;
+    } while (false);
+
+    cpueaxh_close(engine);
+    return ok;
+}
+
+inline bool run_compat32_retf_to_64_case(const std::string& name, std::uint64_t seed, Failure& failure) {
+    cpueaxh_engine* engine = nullptr;
+    if (cpueaxh_open(CPUEAXH_ARCH_X86, CPUEAXH_MODE_COMPAT32, &engine) != CPUEAXH_ERR_OK) {
+        failure.case_name = name;
+        failure.detail = "cpueaxh_open compat32 failed";
+        return false;
+    }
+
+    constexpr std::uint64_t kRbxTarget = 0x1122334455667788ull;
+    constexpr std::size_t kLongTargetOffset = 0x80;
+    std::vector<std::uint8_t> code(kLongTargetOffset + 10, 0x90);
+    code[0] = 0xB8;
+    code[1] = 0x44;
+    code[2] = 0x33;
+    code[3] = 0x22;
+    code[4] = 0x11;
+    code[5] = 0xCB;
+    code[kLongTargetOffset + 0] = 0x48;
+    code[kLongTargetOffset + 1] = 0xBB;
+    for (std::size_t index = 0; index < 8; ++index) {
+        code[kLongTargetOffset + 2 + index] = static_cast<std::uint8_t>((kRbxTarget >> (index * 8)) & 0xFFu);
+    }
+
+    const std::uint64_t guest_rsp = kGuestStackBase + kInitialRspOffset;
+    const std::uint32_t target_offset = static_cast<std::uint32_t>(kGuestCodeBase + kLongTargetOffset);
+
+    bool ok = false;
+    do {
+        cpueaxh_x86_context initial = make_initial_context(seed);
+        if (!initialize_manual_engine(engine, code, initial, guest_rsp, failure, name)) {
+            break;
+        }
+        if (!configure_compat32_segments(engine, failure, name)) {
+            break;
+        }
+        if (!write_engine_dword(engine, guest_rsp, target_offset) ||
+            !write_engine_dword(engine, guest_rsp + 4, 0x08u)) {
+            failure.case_name = name;
+            failure.detail = "retf stack seed failed";
+            break;
+        }
+
+        const cpueaxh_err err = cpueaxh_emu_start_function(engine, kGuestCodeBase, 0, 3);
+        if (err != CPUEAXH_ERR_OK || cpueaxh_code_exception(engine) != CPUEAXH_EXCEPTION_NONE) {
+            failure.case_name = name;
+            failure.detail = "retf execution failed";
+            break;
+        }
+
+        cpueaxh_x86_context final_context{};
+        if (cpueaxh_context_read(engine, &final_context) != CPUEAXH_ERR_OK) {
+            failure.case_name = name;
+            failure.detail = "retf context read failed";
+            break;
+        }
+
+        if (final_context.regs[static_cast<std::size_t>(Reg::RAX)] != 0x11223344ull ||
+            final_context.regs[static_cast<std::size_t>(Reg::RBX)] != kRbxTarget ||
+            final_context.cs.selector != 0x08u ||
+            final_context.cs.descriptor.long_mode != 1u ||
+            final_context.cs.descriptor.db != 0u ||
+            final_context.rip != (kGuestCodeBase + kLongTargetOffset + 10) ||
+            (final_context.regs[static_cast<std::size_t>(Reg::RSP)] & 0xFFFFFFFFull) != (guest_rsp + 8u)) {
+            failure.case_name = name;
+            failure.detail = "retf compat32->64 state mismatch";
+            break;
+        }
+
+        ok = true;
+    } while (false);
+
+    cpueaxh_close(engine);
+    return ok;
+}
+
+inline bool run_compat32_far_jmp_33_case(const std::string& name, std::uint64_t seed, Failure& failure) {
+    cpueaxh_engine* engine = nullptr;
+    if (cpueaxh_open(CPUEAXH_ARCH_X86, CPUEAXH_MODE_COMPAT32, &engine) != CPUEAXH_ERR_OK) {
+        failure.case_name = name;
+        failure.detail = "cpueaxh_open compat32 failed";
+        return false;
+    }
+
+    constexpr std::uint64_t kRbxTarget = 0x8877665544332211ull;
+    constexpr std::size_t kLongTargetOffset = 0xA0;
+    std::vector<std::uint8_t> code(kLongTargetOffset + 10, 0x90);
+    code[0] = 0xEA;
+    code[1] = static_cast<std::uint8_t>(kLongTargetOffset & 0xFFu);
+    code[2] = static_cast<std::uint8_t>((kLongTargetOffset >> 8) & 0xFFu);
+    code[3] = 0x10;
+    code[4] = 0x00;
+    code[5] = 0x33;
+    code[6] = 0x00;
+    code[kLongTargetOffset + 0] = 0x48;
+    code[kLongTargetOffset + 1] = 0xBB;
+    for (std::size_t index = 0; index < 8; ++index) {
+        code[kLongTargetOffset + 2 + index] = static_cast<std::uint8_t>((kRbxTarget >> (index * 8)) & 0xFFu);
+    }
+
+    const std::uint64_t guest_rsp = kGuestStackBase + kInitialRspOffset;
+    bool ok = false;
+    do {
+        cpueaxh_x86_context initial = make_initial_context(seed);
+        if (!initialize_manual_engine(engine, code, initial, guest_rsp, failure, name)) {
+            break;
+        }
+        if (!configure_compat32_user_segments(engine, failure, name)) {
+            break;
+        }
+
+        const cpueaxh_err err = cpueaxh_emu_start_function(engine, kGuestCodeBase, 0, 2);
+        if (err != CPUEAXH_ERR_OK || cpueaxh_code_exception(engine) != CPUEAXH_EXCEPTION_NONE) {
+            failure.case_name = name;
+            failure.detail = "far jmp 0x33 execution failed";
+            break;
+        }
+
+        cpueaxh_x86_context final_context{};
+        if (cpueaxh_context_read(engine, &final_context) != CPUEAXH_ERR_OK) {
+            failure.case_name = name;
+            failure.detail = "far jmp 0x33 context read failed";
+            break;
+        }
+
+        if (final_context.regs[static_cast<std::size_t>(Reg::RBX)] != kRbxTarget ||
+            final_context.cs.selector != 0x33u ||
+            final_context.cs.descriptor.long_mode != 1u ||
+            final_context.cs.descriptor.db != 0u ||
+            final_context.cpl != 3u ||
+            final_context.rip != (kGuestCodeBase + kLongTargetOffset + 10) ||
+            final_context.regs[static_cast<std::size_t>(Reg::RSP)] != guest_rsp) {
+            failure.case_name = name;
+            failure.detail = "far jmp 0x33 state mismatch";
+            break;
+        }
+
+        ok = true;
+    } while (false);
+
+    cpueaxh_close(engine);
+    return ok;
+}
+
 inline bool run_manual_x87_status_case(
     const std::string& name,
     const std::vector<std::uint8_t>& code,
@@ -5005,7 +5348,7 @@ inline bool emit_host_mov_reg_imm64(std::vector<std::uint8_t>& code, std::uint8_
 inline bool run_host_stack_roundtrip_case(const std::string& name, std::uint64_t seed, Failure& failure);
 
 inline std::uint64_t manual_special_case_count(const HostFeatures& features) {
-    const std::uint64_t per_seed_special = (features.avx ? 47ull : 46ull) + (features.popcnt ? 3ull : 0ull) + 10ull
+    const std::uint64_t per_seed_special = (features.avx ? 47ull : 46ull) + (features.popcnt ? 3ull : 0ull) + 14ull
         + (features.aes ? 2ull : 0ull)
         + ((features.aes && features.avx) ? 2ull : 0ull);
     const std::uint64_t exception_special = 41ull + ((features.aes && features.avx) ? 2ull : 0ull);
@@ -5115,6 +5458,18 @@ inline bool run_manual_special_tests(const HostFeatures& features, std::uint64_t
 
     for (std::uint64_t seed_index = 0; seed_index < kSeedCount; ++seed_index) {
         Failure failure;
+        const std::uint64_t seed_compat_ret = seeded(seed_index, 0xE101);
+        if (!tick(run_compat32_near_ret_case("compat32_ret:" + std::to_string(seed_compat_ret), seed_compat_ret, false, failure), failure)) return false;
+
+        const std::uint64_t seed_compat_ret_imm = seeded(seed_index, 0xE102);
+        if (!tick(run_compat32_near_ret_case("compat32_ret_imm:" + std::to_string(seed_compat_ret_imm), seed_compat_ret_imm, true, failure), failure)) return false;
+
+        const std::uint64_t seed_compat_retf = seeded(seed_index, 0xE103);
+        if (!tick(run_compat32_retf_to_64_case("compat32_retf64:" + std::to_string(seed_compat_retf), seed_compat_retf, failure), failure)) return false;
+
+        const std::uint64_t seed_compat_jmp33 = seeded(seed_index, 0xE104);
+        if (!tick(run_compat32_far_jmp_33_case("compat32_jmp33:" + std::to_string(seed_compat_jmp33), seed_compat_jmp33, failure), failure)) return false;
+
         const std::uint64_t seed0 = seeded(seed_index, 0xE001);
         if (!tick(run_manual_special_case("endbr64:" + std::to_string(seed0), endbr64, seed0, 0, false, failure), failure)) return false;
 

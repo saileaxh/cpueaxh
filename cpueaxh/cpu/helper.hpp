@@ -68,6 +68,31 @@ bool is_conforming_code_segment(uint8_t type) {
     return is_code_segment(type) && (type & 0x04);
 }
 
+void cpu_reset_prefix_state(CPU_CONTEXT* ctx) {
+    if (!ctx) {
+        return;
+    }
+    ctx->rex_present = false;
+    ctx->rex_w = false;
+    ctx->rex_r = false;
+    ctx->rex_x = false;
+    ctx->rex_b = false;
+    ctx->operand_size_override = false;
+    ctx->address_size_override = false;
+}
+
+bool cpu_try_apply_rex_prefix(CPU_CONTEXT* ctx, uint8_t prefix) {
+    if (!ctx || !cpu_allows_rex_prefix(ctx) || prefix < 0x40 || prefix > 0x4F) {
+        return false;
+    }
+    ctx->rex_present = true;
+    ctx->rex_w = ((prefix >> 3) & 1) != 0;
+    ctx->rex_r = ((prefix >> 2) & 1) != 0;
+    ctx->rex_x = ((prefix >> 1) & 1) != 0;
+    ctx->rex_b = (prefix & 1) != 0;
+    return true;
+}
+
 SegmentRegister* get_segment_register(CPU_CONTEXT* ctx, int index) {
     static SegmentRegister dummy = {};
 
@@ -190,7 +215,7 @@ inline int cpu_default_segment_for_memory_operand(const CPU_CONTEXT* ctx, uint8_
     }
 
     if (addr_size != 16) {
-        const bool long_mode = ctx && ctx->cs.descriptor.long_mode;
+        const bool long_mode = cpu_allows_rex_prefix(ctx);
         if ((rm & 0x07) == 4 && has_sib) {
             uint8_t base = sib & 0x07;
             if (ctx && ctx->rex_b && long_mode) {
@@ -221,7 +246,7 @@ inline int cpu_default_segment_for_memory_operand(const CPU_CONTEXT* ctx, uint8_
 uint64_t get_effective_offset(CPU_CONTEXT* ctx, uint8_t modrm, uint8_t* sib, int32_t* disp, int addr_size, int inst_size = 0) {
     uint8_t mod = (modrm >> 6) & 0x03;
     uint8_t rm = modrm & 0x07;
-    const bool long_mode = ctx->cs.descriptor.long_mode;
+    const bool long_mode = cpu_allows_rex_prefix(ctx);
 
     if (ctx->rex_b && long_mode) {
         rm |= 0x08;
@@ -553,10 +578,7 @@ void write_zmm_memory(CPU_CONTEXT* ctx, uint64_t address, ZMMRegister value) {
 
 // Determine stack address size: in 64-bit mode always 64; otherwise based on SS.B flag
 int get_stack_addr_size(CPU_CONTEXT* ctx) {
-    if (ctx->cs.descriptor.long_mode) {
-        return 64;
-    }
-    return ctx->ss.descriptor.db ? 32 : 16;
+    return cpu_stack_address_size(ctx);
 }
 
 // Push a 16-bit value onto the stack

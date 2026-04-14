@@ -1,8 +1,9 @@
 // cpu/init.hpp - CPU initialization
 
-void init_cpu_context(CPU_CONTEXT* ctx, MEMORY_MANAGER* mem_mgr) {
+void init_cpu_context(CPU_CONTEXT* ctx, MEMORY_MANAGER* mem_mgr, bool start_in_compat32 = false) {
     CPUEAXH_MEMSET(ctx, 0, sizeof(CPU_CONTEXT));
     ctx->mem_mgr = mem_mgr;
+    ctx->long_mode_active = true;
     ctx->cpl = 0;
     ctx->mxcsr = 0x1F80;
     cpu_reset_x87_state(ctx);
@@ -17,8 +18,8 @@ void init_cpu_context(CPU_CONTEXT* ctx, MEMORY_MANAGER* mem_mgr) {
     ctx->cs.descriptor.dpl = 0;
     ctx->cs.descriptor.present = true;
     ctx->cs.descriptor.granularity = true;
-    ctx->cs.descriptor.db = false;
-    ctx->cs.descriptor.long_mode = true;
+    ctx->cs.descriptor.db = start_in_compat32;
+    ctx->cs.descriptor.long_mode = !start_in_compat32;
 
     ctx->ds.selector = 0x10;
     ctx->ds.descriptor.base = 0;

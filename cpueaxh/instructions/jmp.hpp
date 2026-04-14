@@ -64,7 +64,7 @@ void jmp_far(CPU_CONTEXT* ctx, uint16_t new_selector, uint64_t new_offset, int o
     }
 
     // L=1 and D=1 simultaneously is invalid in long mode
-    if (ctx->cs.descriptor.long_mode && new_desc.long_mode && new_desc.db) {
+    if (cpu_long_mode_active(ctx) && new_desc.long_mode && new_desc.db) {
         raise_gp_ctx(ctx, new_selector & 0xFFFC);
     }
 
@@ -93,14 +93,11 @@ void jmp_far(CPU_CONTEXT* ctx, uint16_t new_selector, uint64_t new_offset, int o
 
     // Truncate offset based on target mode
     uint64_t target_rip = new_offset;
-    if (!new_desc.long_mode) {
-        // Compatibility mode: mask to 32 bits
-        if (operand_size == 16) {
-            target_rip &= 0xFFFF;
-        }
-        else {
-            target_rip &= 0xFFFFFFFF;
-        }
+    if (new_desc.long_mode) {
+        target_rip = cpu_mask_code_offset(target_rip, operand_size);
+    }
+    else {
+        target_rip = cpu_mask_code_offset(target_rip, operand_size);
     }
 
     // Load new CS (no stack changes ¡ª this is JMP, not CALL)
@@ -173,13 +170,7 @@ DecodedInstruction decode_jmp_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
     DecodedInstruction inst = {};
     size_t offset = 0;
 
-    ctx->rex_present = false;
-    ctx->rex_w = false;
-    ctx->rex_r = false;
-    ctx->rex_x = false;
-    ctx->rex_b = false;
-    ctx->operand_size_override = false;
-    ctx->address_size_override = false;
+    cpu_reset_prefix_state(ctx);
 
     // Decode prefixes
     while (offset < code_size) {
@@ -192,12 +183,7 @@ DecodedInstruction decode_jmp_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
             ctx->address_size_override = true;
             offset++;
         }
-        else if (prefix >= 0x40 && prefix <= 0x4F) {
-            ctx->rex_present = true;
-            ctx->rex_w = (prefix >> 3) & 1;
-            ctx->rex_r = (prefix >> 2) & 1;
-            ctx->rex_x = (prefix >> 1) & 1;
-            ctx->rex_b = prefix & 1;
+        else if (cpu_try_apply_rex_prefix(ctx, prefix)) {
             offset++;
         }
         else if (prefix == 0xF0) {
@@ -221,7 +207,7 @@ DecodedInstruction decode_jmp_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
 
     // Determine operand size
     // In 64-bit mode: near JMP forced to 64; far JMP follows rex_w / override
-    if (ctx->cs.descriptor.long_mode) {
+    if (cpu_is_64bit_code(ctx)) {
         if (ctx->operand_size_override) {
             inst.operand_size = 16;
         }
@@ -240,12 +226,9 @@ DecodedInstruction decode_jmp_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
     }
 
     // Determine address size
-    if (ctx->cs.descriptor.long_mode) {
-        inst.address_size = ctx->address_size_override ? 32 : 64;
-    }
-    else {
-        inst.address_size = ctx->address_size_override ? 16 : 32;
-    }
+    inst.address_size = ctx->address_size_override
+        ? (cpu_default_address_size(ctx) == 64 ? 32 : 16)
+        : cpu_default_address_size(ctx);
 
     switch (inst.opcode) {
     // EB cb - JMP rel8 (short jump)
@@ -259,7 +242,7 @@ DecodedInstruction decode_jmp_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
 
     // E9 cw/cd - JMP rel16 / JMP rel32
     case 0xE9:
-        if (ctx->cs.descriptor.long_mode) {
+        if (cpu_is_64bit_code(ctx)) {
             // rel16 not supported in 64-bit mode
             if (ctx->operand_size_override) {
                 raise_ud_ctx(ctx);
@@ -286,7 +269,7 @@ DecodedInstruction decode_jmp_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
 
         if (reg_field == 4) {
             // Near indirect: in 64-bit mode forced to r/m64
-            if (ctx->cs.descriptor.long_mode) {
+            if (cpu_is_64bit_code(ctx)) {
                 inst.operand_size = 64;
             }
         }
@@ -297,7 +280,7 @@ DecodedInstruction decode_jmp_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
                 raise_ud_ctx(ctx);
             }
             // Operand size for far pointer: REX.W ¡ú m16:64, default ¡ú m16:32, 0x66 ¡ú m16:16
-            if (ctx->cs.descriptor.long_mode) {
+            if (cpu_is_64bit_code(ctx)) {
                 if (ctx->rex_w) {
                     inst.operand_size = 64;
                 }
@@ -317,7 +300,7 @@ DecodedInstruction decode_jmp_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
 
     // EA cd/cp - JMP ptr16:16 / JMP ptr16:32 (far direct, invalid in 64-bit mode)
     case 0xEA:
-        if (ctx->cs.descriptor.long_mode) {
+        if (cpu_is_64bit_code(ctx)) {
             raise_ud_ctx(ctx);
         }
         // Read far pointer: offset then selector

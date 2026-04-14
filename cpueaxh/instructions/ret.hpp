@@ -1,7 +1,7 @@
 // instrusments/ret.hpp - RET far instruction implementation
 
 int decode_ret_far_operand_size(CPU_CONTEXT* ctx) {
-    if (ctx->cs.descriptor.long_mode) {
+    if (cpu_is_64bit_code(ctx)) {
         return ctx->operand_size_override ? 16 : 64;
     }
     return ctx->operand_size_override ? 16 : 32;
@@ -34,7 +34,7 @@ void validate_ret_far_selector(CPU_CONTEXT* ctx, uint16_t selector, SegmentDescr
         raise_gp_ctx(ctx, selector & 0xFFFC);
     }
 
-    if (ctx->cs.descriptor.long_mode && desc.long_mode && desc.db) {
+    if (cpu_long_mode_active(ctx) && desc.long_mode && desc.db) {
         raise_gp_ctx(ctx, selector & 0xFFFC);
     }
 
@@ -63,13 +63,7 @@ DecodedInstruction decode_ret_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
     DecodedInstruction inst = {};
     size_t offset = 0;
 
-    ctx->rex_present = false;
-    ctx->rex_w = false;
-    ctx->rex_r = false;
-    ctx->rex_x = false;
-    ctx->rex_b = false;
-    ctx->operand_size_override = false;
-    ctx->address_size_override = false;
+    cpu_reset_prefix_state(ctx);
 
     bool has_lock_prefix = false;
 
@@ -83,12 +77,7 @@ DecodedInstruction decode_ret_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
             ctx->address_size_override = true;
             offset++;
         }
-        else if (prefix >= 0x40 && prefix <= 0x4F) {
-            ctx->rex_present = true;
-            ctx->rex_w = (prefix >> 3) & 1;
-            ctx->rex_r = (prefix >> 2) & 1;
-            ctx->rex_x = (prefix >> 1) & 1;
-            ctx->rex_b = prefix & 1;
+        else if (cpu_try_apply_rex_prefix(ctx, prefix)) {
             offset++;
         }
         else if (prefix == 0xF0) {
@@ -162,10 +151,10 @@ void execute_ret(CPU_CONTEXT* ctx, uint8_t* code, size_t code_size) {
     ctx->cs.descriptor = new_desc;
 
     if (inst.operand_size == 16) {
-        ctx->rip = (uint16_t)new_rip;
+        ctx->rip = cpu_mask_code_offset(new_rip, 16);
     }
     else if (inst.operand_size == 32) {
-        ctx->rip = (uint32_t)new_rip;
+        ctx->rip = cpu_mask_code_offset(new_rip, 32);
     }
     else {
         ctx->rip = new_rip;
@@ -177,13 +166,7 @@ DecodedInstruction decode_iret_instruction(CPU_CONTEXT* ctx, uint8_t* code, size
     size_t offset = 0;
     bool has_lock_prefix = false;
 
-    ctx->rex_present = false;
-    ctx->rex_w = false;
-    ctx->rex_r = false;
-    ctx->rex_x = false;
-    ctx->rex_b = false;
-    ctx->operand_size_override = false;
-    ctx->address_size_override = false;
+    cpu_reset_prefix_state(ctx);
 
     while (offset < code_size) {
         uint8_t prefix = code[offset];
@@ -195,12 +178,7 @@ DecodedInstruction decode_iret_instruction(CPU_CONTEXT* ctx, uint8_t* code, size
             ctx->address_size_override = true;
             offset++;
         }
-        else if (prefix >= 0x40 && prefix <= 0x4F) {
-            ctx->rex_present = true;
-            ctx->rex_w = (prefix >> 3) & 1;
-            ctx->rex_r = (prefix >> 2) & 1;
-            ctx->rex_x = (prefix >> 1) & 1;
-            ctx->rex_b = prefix & 1;
+        else if (cpu_try_apply_rex_prefix(ctx, prefix)) {
             offset++;
         }
         else if (prefix == 0xF0) {
@@ -274,10 +252,10 @@ void execute_iret(CPU_CONTEXT* ctx, uint8_t* code, size_t code_size) {
     ctx->cs.selector = new_selector;
     ctx->rflags = new_rflags;
     if (inst.operand_size == 16) {
-        ctx->rip = (uint16_t)new_rip;
+        ctx->rip = cpu_mask_code_offset(new_rip, 16);
     }
     else if (inst.operand_size == 32) {
-        ctx->rip = (uint32_t)new_rip;
+        ctx->rip = cpu_mask_code_offset(new_rip, 32);
     }
     else {
         ctx->rip = new_rip;

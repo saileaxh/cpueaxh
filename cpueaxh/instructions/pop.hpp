@@ -163,13 +163,7 @@ DecodedInstruction decode_pop_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
     DecodedInstruction inst = {};
     size_t offset = 0;
 
-    ctx->rex_present = false;
-    ctx->rex_w = false;
-    ctx->rex_r = false;
-    ctx->rex_x = false;
-    ctx->rex_b = false;
-    ctx->operand_size_override = false;
-    ctx->address_size_override = false;
+    cpu_reset_prefix_state(ctx);
 
     // Decode prefixes
     while (offset < code_size) {
@@ -182,12 +176,7 @@ DecodedInstruction decode_pop_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
             ctx->address_size_override = true;
             offset++;
         }
-        else if (prefix >= 0x40 && prefix <= 0x4F) {
-            ctx->rex_present = true;
-            ctx->rex_w = (prefix >> 3) & 1;
-            ctx->rex_r = (prefix >> 2) & 1;
-            ctx->rex_x = (prefix >> 1) & 1;
-            ctx->rex_b = prefix & 1;
+        else if (cpu_try_apply_rex_prefix(ctx, prefix)) {
             offset++;
         }
         else if (prefix == 0xF0) {
@@ -212,7 +201,7 @@ DecodedInstruction decode_pop_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
 
     // In 64-bit mode, POP default operand size is 64 (not 32!)
     // 0x66 demotes to 16, otherwise default is 64
-    if (ctx->cs.descriptor.long_mode) {
+    if (cpu_is_64bit_code(ctx)) {
         if (ctx->operand_size_override) {
             inst.operand_size = 16;
         }
@@ -231,12 +220,9 @@ DecodedInstruction decode_pop_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
     }
 
     // Determine address size
-    if (ctx->cs.descriptor.long_mode) {
-        inst.address_size = ctx->address_size_override ? 32 : 64;
-    }
-    else {
-        inst.address_size = ctx->address_size_override ? 16 : 32;
-    }
+    inst.address_size = ctx->address_size_override
+        ? (cpu_default_address_size(ctx) == 64 ? 32 : 16)
+        : cpu_default_address_size(ctx);
 
     switch (inst.opcode) {
     // 8F /0 - POP r/m16, r/m32, r/m64
@@ -246,7 +232,7 @@ DecodedInstruction decode_pop_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
             raise_ud_ctx(ctx);
         }
         // In 64-bit mode, 32-bit operand size is not encodable
-        if (ctx->cs.descriptor.long_mode && inst.operand_size == 32) {
+        if (cpu_is_64bit_code(ctx) && inst.operand_size == 32) {
             inst.operand_size = 64;
         }
         break;
@@ -255,28 +241,28 @@ DecodedInstruction decode_pop_instruction(CPU_CONTEXT* ctx, uint8_t* code, size_
     case 0x58: case 0x59: case 0x5A: case 0x5B:
     case 0x5C: case 0x5D: case 0x5E: case 0x5F:
         // In 64-bit mode, 32-bit operand size is not encodable
-        if (ctx->cs.descriptor.long_mode && inst.operand_size == 32) {
+        if (cpu_is_64bit_code(ctx) && inst.operand_size == 32) {
             inst.operand_size = 64;
         }
         break;
 
     // 1F - POP DS (invalid in 64-bit mode)
     case 0x1F:
-        if (ctx->cs.descriptor.long_mode) {
+        if (cpu_is_64bit_code(ctx)) {
             raise_ud_ctx(ctx);
         }
         break;
 
     // 07 - POP ES (invalid in 64-bit mode)
     case 0x07:
-        if (ctx->cs.descriptor.long_mode) {
+        if (cpu_is_64bit_code(ctx)) {
             raise_ud_ctx(ctx);
         }
         break;
 
     // 17 - POP SS (invalid in 64-bit mode)
     case 0x17:
-        if (ctx->cs.descriptor.long_mode) {
+        if (cpu_is_64bit_code(ctx)) {
             raise_ud_ctx(ctx);
         }
         break;
@@ -326,7 +312,7 @@ void execute_pop(CPU_CONTEXT* ctx, uint8_t* code, size_t code_size) {
             seg_index = SEG_GS;
         }
 
-        if (ctx->cs.descriptor.long_mode) {
+        if (cpu_is_64bit_code(ctx)) {
             if (ctx->operand_size_override) {
                 pop_sreg16(ctx, seg_index);
             }

@@ -67,7 +67,7 @@ static int fetch_instruction_bytes(CPU_CONTEXT* ctx, uint64_t addr, uint8_t* buf
 // *prefix_len is set to that index.
 // For a two-byte 0x0F escape, returns 0x0F00 | second_byte.
 // Returns 0xFFFF if the buffer is truncated before any opcode byte.
-static uint16_t peek_opcode(const uint8_t* buf, int len, int* prefix_len) {
+static uint16_t peek_opcode(const CPU_CONTEXT* ctx, const uint8_t* buf, int len, int* prefix_len) {
     int i = 0;
     while (i < len) {
         uint8_t b = buf[i];
@@ -77,7 +77,7 @@ static uint16_t peek_opcode(const uint8_t* buf, int len, int* prefix_len) {
             b == 0xF0 || b == 0xF2 || b == 0xF3) {
             i++; continue;
         }
-        if (b >= 0x40 && b <= 0x4F) { i++; continue; } // REX
+        if (cpu_allows_rex_prefix(ctx) && b >= 0x40 && b <= 0x4F) { i++; continue; } // REX
         break;
     }
     *prefix_len = i;
@@ -145,6 +145,38 @@ static bool is_branch_opcode(uint16_t opc) {
 static uint8_t peek_modrm_reg_field(const uint8_t* buf, int fetched, int prefix_len, int opc_offset) {
     int pos = prefix_len + opc_offset;
     return (pos < fetched) ? (uint8_t)((buf[pos] >> 3) & 0x07) : 0xFF;
+}
+
+static int decode_near_ret_operand_size(CPU_CONTEXT* ctx, const uint8_t* buf, int fetched, int* prefix_len_out) {
+    int prefix_len = 0;
+    bool operand_size_override = false;
+    while (prefix_len < fetched) {
+        const uint8_t prefix = buf[prefix_len];
+        if (prefix == 0x66) {
+            operand_size_override = true;
+            prefix_len++;
+            continue;
+        }
+        if (prefix == 0x67 || prefix == 0xF0 || prefix == 0xF2 || prefix == 0xF3 ||
+            prefix == 0x26 || prefix == 0x2E || prefix == 0x36 || prefix == 0x3E ||
+            prefix == 0x64 || prefix == 0x65) {
+            prefix_len++;
+            continue;
+        }
+        if (cpu_allows_rex_prefix(ctx) && prefix >= 0x40 && prefix <= 0x4F) {
+            prefix_len++;
+            continue;
+        }
+        break;
+    }
+
+    if (prefix_len_out) {
+        *prefix_len_out = prefix_len;
+    }
+    if (cpu_is_64bit_code(ctx)) {
+        return operand_size_override ? 16 : 64;
+    }
+    return operand_size_override ? 16 : 32;
 }
 
 static bool cpu_step_may_touch_vector_state(const uint8_t* buf, int fetched, int prefix_len, uint16_t opc, uint8_t mandatory_prefix) {
@@ -457,7 +489,7 @@ static int cpu_step_with_prefetch(CPU_CONTEXT* ctx, const uint8_t* prefetched_by
         goto cpu_step_finish;
     }
 
-    opc = peek_opcode(buf, fetched, &prefix_len);
+    opc = peek_opcode(ctx, buf, fetched, &prefix_len);
     if (opc == 0xFFFF) {
         result_code = cpu_has_exception(ctx) ? CPU_STEP_EXCEPTION : CPU_STEP_FETCH_ERR;
         goto cpu_step_finish;
@@ -467,7 +499,7 @@ static int cpu_step_with_prefetch(CPU_CONTEXT* ctx, const uint8_t* prefetched_by
     is_xgetbv = opc == 0x0F01 && (prefix_len + 2) < fetched && buf[prefix_len + 2] == 0xD0;
 
     for (int prefix_index = 0; prefix_index < prefix_len; prefix_index++) {
-        if (buf[prefix_index] >= 0x40 && buf[prefix_index] <= 0x4F) {
+        if (cpu_allows_rex_prefix(ctx) && buf[prefix_index] >= 0x40 && buf[prefix_index] <= 0x4F) {
             last_rex_prefix = buf[prefix_index];
         }
     }
@@ -535,20 +567,52 @@ static int cpu_step_with_prefetch(CPU_CONTEXT* ctx, const uint8_t* prefetched_by
 
     // RET near: C3 / C2 iw  (handled inline - branch)
     if (opc == 0x00C3) {
-        ctx->last_inst_size = prefix_len + 1;
-        ctx->rip = pop_value64(ctx);
+        int near_ret_prefix_len = 0;
+        const int operand_size = decode_near_ret_operand_size(ctx, buf, fetched, &near_ret_prefix_len);
+        ctx->last_inst_size = near_ret_prefix_len + 1;
+        if (operand_size == 16) {
+            ctx->rip = cpu_mask_code_offset(pop_value16(ctx), 16);
+        }
+        else if (operand_size == 32) {
+            ctx->rip = cpu_mask_code_offset(pop_value32(ctx), 32);
+        }
+        else {
+            ctx->rip = pop_value64(ctx);
+        }
         goto cpu_step_finish;
     }
     if (opc == 0x00C2) {
-        if (fetched < prefix_len + 3) { raise_gp_ctx(ctx, 0); }
+        int near_ret_prefix_len = 0;
+        const int operand_size = decode_near_ret_operand_size(ctx, buf, fetched, &near_ret_prefix_len);
+        if (fetched < near_ret_prefix_len + 3) { raise_gp_ctx(ctx, 0); }
         if (cpu_has_exception(ctx)) {
             goto cpu_step_finish;
         }
-        uint16_t imm16 = (uint16_t)buf[prefix_len + 1]
-            | ((uint16_t)buf[prefix_len + 2] << 8);
-        ctx->last_inst_size = prefix_len + 3;
-        ctx->rip = pop_value64(ctx);
-        ctx->regs[REG_RSP] += imm16;
+        uint16_t imm16 = (uint16_t)buf[near_ret_prefix_len + 1]
+            | ((uint16_t)buf[near_ret_prefix_len + 2] << 8);
+        ctx->last_inst_size = near_ret_prefix_len + 3;
+        if (operand_size == 16) {
+            ctx->rip = cpu_mask_code_offset(pop_value16(ctx), 16);
+        }
+        else if (operand_size == 32) {
+            ctx->rip = cpu_mask_code_offset(pop_value32(ctx), 32);
+        }
+        else {
+            ctx->rip = pop_value64(ctx);
+        }
+        if (get_stack_addr_size(ctx) == 64) {
+            ctx->regs[REG_RSP] += imm16;
+        }
+        else if (get_stack_addr_size(ctx) == 32) {
+            uint32_t esp = (uint32_t)(ctx->regs[REG_RSP] & 0xFFFFFFFFu);
+            esp += imm16;
+            ctx->regs[REG_RSP] = (ctx->regs[REG_RSP] & ~0xFFFFFFFFULL) | esp;
+        }
+        else {
+            uint16_t sp = (uint16_t)(ctx->regs[REG_RSP] & 0xFFFFu);
+            sp = (uint16_t)(sp + imm16);
+            ctx->regs[REG_RSP] = (ctx->regs[REG_RSP] & ~0xFFFFULL) | sp;
+        }
         goto cpu_step_finish;
     }
 
@@ -991,6 +1055,14 @@ static int cpu_step_with_prefetch(CPU_CONTEXT* ctx, const uint8_t* prefetched_by
     // IDIV: F6/7, F7/7
     else if ((raw_opc == 0xF6 || raw_opc == 0xF7) && group3_reg == 7) {
         execute_idiv(ctx, buf, (size_t)fetched);
+    }
+    // INC: FE/0
+    else if (!cpu_is_64bit_code(ctx) && raw_opc >= 0x40 && raw_opc <= 0x47) {
+        execute_inc(ctx, buf, (size_t)fetched);
+    }
+    // DEC: 48-4F in compatibility/legacy encodings
+    else if (!cpu_is_64bit_code(ctx) && raw_opc >= 0x48 && raw_opc <= 0x4F) {
+        execute_dec(ctx, buf, (size_t)fetched);
     }
     // INC: FE/0
     else if (raw_opc == 0xFE && fe_reg == 0) {
